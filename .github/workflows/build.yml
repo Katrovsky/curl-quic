@@ -1,0 +1,223 @@
+name: Build OpenWrt APK & Deploy Repository
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: 'OpenWrt version'
+        required: true
+        default: '25.12.6'
+      target:
+        description: 'Target architecture group'
+        required: true
+        default: 'mediatek'
+      subtarget:
+        description: 'Subtarget'
+        required: true
+        default: 'filogic'
+      arch:
+        description: 'Package architecture'
+        required: true
+        default: 'aarch64_cortex-a53'
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build curl-quic APK
+    runs-on: ubuntu-24.04
+    env:
+      OPENWRT_VER: ${{ inputs.openwrt_version || '25.12.6' }}
+      TARGET: ${{ inputs.target || 'mediatek' }}
+      SUBTARGET: ${{ inputs.subtarget || 'filogic' }}
+      ARCH: ${{ inputs.arch || 'aarch64_cortex-a53' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          NEEDED_PKGS="gawk flex bison gettext gcc-multilib g++-multilib libelf-dev libncurses-dev"
+          MISSING_PKGS=""
+          for pkg in $NEEDED_PKGS; do
+            if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+              MISSING_PKGS="$MISSING_PKGS $pkg"
+            fi
+          done
+          if [ -n "$MISSING_PKGS" ]; then
+            echo "Installing missing dependencies:$MISSING_PKGS"
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends $MISSING_PKGS
+          else
+            echo "All build dependencies are already present on runner."
+          fi
+
+      - name: Cache OpenWrt SDK & Source Tarballs
+        id: cache-downloads
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.openwrt-cache/sdk
+            ~/.openwrt-cache/dl
+          key: openwrt-cache-${{ env.OPENWRT_VER }}-${{ env.TARGET }}-${{ env.SUBTARGET }}-${{ hashFiles('package/curl-quic/Makefile') }}
+          restore-keys: |
+            openwrt-cache-${{ env.OPENWRT_VER }}-${{ env.TARGET }}-${{ env.SUBTARGET }}-
+
+      - name: Download & Extract OpenWrt SDK
+        run: |
+          mkdir -p ~/.openwrt-cache/sdk ~/.openwrt-cache/dl ~/sdk
+          SDK_DIR_URL="https://downloads.openwrt.org/releases/${OPENWRT_VER}/targets/${TARGET}/${SUBTARGET}"
+
+          SDK_TAR="openwrt-sdk-${OPENWRT_VER}-${TARGET}-${SUBTARGET}_gcc-14.3.0_musl_Linux-x86_64.tar.zst"
+          if [ ! -f ~/.openwrt-cache/sdk/${SDK_TAR} ]; then
+            echo "Querying SDK tarball filename from ${SDK_DIR_URL}/sha256sums..."
+            DISCOVERED_TAR=$(curl -fsSL "${SDK_DIR_URL}/sha256sums" | grep -oE "openwrt-sdk-[^[:space:]]+Linux-x86_64\.tar\.zst" | head -n1)
+            if [ -n "${DISCOVERED_TAR}" ]; then
+              SDK_TAR="${DISCOVERED_TAR}"
+            fi
+            echo "Downloading OpenWrt SDK (${SDK_TAR})..."
+            curl -fsSL "${SDK_DIR_URL}/${SDK_TAR}" -o ~/.openwrt-cache/sdk/${SDK_TAR}
+          else
+            echo "Using cached OpenWrt SDK archive from ~/.openwrt-cache/sdk/${SDK_TAR}"
+          fi
+
+          echo "Extracting OpenWrt SDK..."
+          tar --zstd -xf ~/.openwrt-cache/sdk/${SDK_TAR} -C ~/sdk --strip-components=1
+
+          # Restore cached source archives (curl, quictls, nghttp3, ngtcp2 tarballs)
+          mkdir -p ~/sdk/dl
+          if [ -d ~/.openwrt-cache/dl ] && [ "$(ls -A ~/.openwrt-cache/dl 2>/dev/null)" ]; then
+            echo "Restoring cached source archives into ~/sdk/dl:"
+            cp -vn ~/.openwrt-cache/dl/* ~/sdk/dl/ || true
+            ls -la ~/sdk/dl/
+          fi
+
+      - name: Setup Package & Signing Key
+        env:
+          RAW_PRIVATE_KEY: ${{ secrets.APK_PRIVATE_KEY }}
+        run: |
+          cd ~/sdk
+
+          echo "Copying curl-quic package..."
+          mkdir -p package/curl-quic
+          cp -r ${{ github.workspace }}/package/curl-quic/* package/curl-quic/
+
+          # OpenWrt 25.12 APK signing uses EC prime256v1 keys:
+          # BUILD_KEY_APK_SEC = $(TOPDIR)/private-key.pem
+          # BUILD_KEY_APK_PUB = $(TOPDIR)/public-key.pem
+          if [ -n "$RAW_PRIVATE_KEY" ]; then
+            echo "Installing APK_PRIVATE_KEY from GitHub Secrets..."
+            printf '%s\n' "$RAW_PRIVATE_KEY" | tr -d '\r' > private-key.pem
+            chmod 600 private-key.pem
+            openssl ec -in private-key.pem -pubout -out public-key.pem 2>/dev/null || openssl rsa -in private-key.pem -pubout -out public-key.pem
+          else
+            echo "::warning::Secret APK_PRIVATE_KEY is not set! Generating a new EC keypair for this build."
+            echo "For reproducible repository updates, generate a key using 'scripts/generate-keys.sh' and add it to GitHub Secrets."
+            openssl ecparam -name prime256v1 -genkey -noout -out private-key.pem
+            chmod 600 private-key.pem
+            openssl ec -in private-key.pem -pubout -out public-key.pem
+          fi
+
+          echo "Public key being published:"
+          cat public-key.pem
+
+          # Also write to legacy key-build paths if any tool checks them
+          cp private-key.pem key-build
+          cp public-key.pem key-build.pub
+          cp public-key.pem ${{ github.workspace }}/curl-quic.pub
+
+      - name: Compile curl-quic
+        run: |
+          cd ~/sdk
+          make defconfig
+          make package/curl-quic/compile V=s -j$(nproc)
+
+          # Save downloaded source archives to cache directory
+          mkdir -p ~/.openwrt-cache/dl
+          if [ -d dl ]; then
+            cp -vn dl/* ~/.openwrt-cache/dl/ 2>/dev/null || true
+          fi
+
+      - name: Index & Sign Repository
+        run: |
+          cd ~/sdk
+          make package/index V=s
+
+      - name: Prepare Publish Directory
+        run: |
+          PUBLISH_DIR="${{ github.workspace }}/publish"
+          mkdir -p "${PUBLISH_DIR}/${ARCH}"
+
+          echo "Finding compiled .apk packages..."
+          find ~/sdk/bin/packages/ -name "*.apk" -exec cp -v {} "${PUBLISH_DIR}/${ARCH}/" \;
+
+          echo "Finding package index files..."
+          find ~/sdk/bin/packages/ -name "packages.adb" -exec cp -v {} "${PUBLISH_DIR}/${ARCH}/" \; || true
+          find ~/sdk/bin/packages/ -name "APKINDEX.tar.gz" -exec cp -v {} "${PUBLISH_DIR}/${ARCH}/" \; || true
+
+          # Also copy to root publish dir and nested arch dir to handle any repository URL configuration variant
+          cp -v "${PUBLISH_DIR}/${ARCH}"/*.apk "${PUBLISH_DIR}/" 2>/dev/null || true
+          cp -v "${PUBLISH_DIR}/${ARCH}"/packages.adb "${PUBLISH_DIR}/" 2>/dev/null || true
+
+          mkdir -p "${PUBLISH_DIR}/${ARCH}/${ARCH}"
+          cp -r "${PUBLISH_DIR}/${ARCH}"/* "${PUBLISH_DIR}/${ARCH}/${ARCH}/" 2>/dev/null || true
+
+          echo "Copying public key and web page..."
+          cp -v "${{ github.workspace }}/curl-quic.pub" "${PUBLISH_DIR}/curl-quic.pub"
+          cp -v "${{ github.workspace }}/index.html" "${PUBLISH_DIR}/index.html"
+
+          echo "Publish tree contents:"
+          ls -laR "${PUBLISH_DIR}"
+
+      - name: Upload Raw Packages Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: openwrt-curl-quic-${{ env.ARCH }}
+          path: ${{ github.workspace }}/publish/
+          retention-days: 14
+
+      - name: Upload GitHub Pages Artifact
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: ${{ github.workspace }}/publish/
+
+      - name: Create or Update GitHub Release
+        if: github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'Latest Release (v8.23.0)' }}
+          files: |
+            ${{ github.workspace }}/publish/${{ env.ARCH }}/*.apk
+            ${{ github.workspace }}/publish/curl-quic.pub
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+
+  deploy-pages:
+    name: Deploy to GitHub Pages
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
+        continue-on-error: true

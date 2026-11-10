@@ -1,0 +1,9 @@
+# Set default behavior to automatically normalize line endings
+* text=auto
+
+# Force LF on shell scripts and Makefiles to prevent execution errors on Linux
+*.sh text eol=lf
+Makefile text eol=lf
+*.mk text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

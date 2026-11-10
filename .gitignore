@@ -1,0 +1,24 @@
+# Build outputs & temporary files
+/dist/
+/publish/
+/deps-install/
+/deps-src/
+/sdk/
+*.apk
+*.adb
+*.tar.gz
+*.tar.xz
+*.tar.zst
+
+# Private signing keys (NEVER COMMIT)
+*.rsa
+*.key
+*.pem
+!key-build.pub
+!curl-quic.pub
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

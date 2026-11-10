@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>cURL with HTTP/3 &amp; QUIC for OpenWrt</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --text-color: #f8fafc;
+            --text-muted: #94a3b8;
+            --primary: #38bdf8;
+            --primary-hover: #0ea5e9;
+            --accent: #10b981;
+            --code-bg: #0b1120;
+            --border: #334155;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 2rem 1rem;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 2.5rem;
+        }
+        h1 {
+            font-size: 2.25rem;
+            margin-bottom: 0.5rem;
+            color: var(--text-color);
+        }
+        h1 span {
+            color: var(--primary);
+        }
+        p.subtitle {
+            font-size: 1.15rem;
+            color: var(--text-muted);
+            margin-top: 0;
+        }
+        .badges {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-top: 1rem;
+        }
+        .badge {
+            background: var(--border);
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        .badge.accent {
+            background: rgba(16, 185, 129, 0.2);
+            color: var(--accent);
+            border: 1px solid rgba(16, 185, 129, 0.4);
+        }
+        .card {
+            background-color: var(--card-bg);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            border: 1px solid var(--border);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+        }
+        h2 {
+            font-size: 1.35rem;
+            margin-top: 0;
+            margin-bottom: 1rem;
+            color: var(--primary);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .code-container {
+            position: relative;
+        }
+        pre {
+            background-color: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            padding-right: 4.5rem;
+            overflow-x: auto;
+            margin: 0;
+        }
+        .copy-btn {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            z-index: 5;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            border-radius: 6px;
+            padding: 0.25rem 0.6rem;
+            font-size: 0.75rem;
+            font-family: inherit;
+            cursor: pointer;
+            transition: all 0.15s ease-in-out;
+            user-select: none;
+        }
+        .copy-btn:hover {
+            color: var(--text-color);
+            border-color: var(--primary);
+            background: rgba(56, 189, 248, 0.1);
+        }
+        .copy-btn.copied {
+            color: var(--accent);
+            border-color: var(--accent);
+            background: rgba(16, 185, 129, 0.1);
+        }
+        code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.9rem;
+            color: #e2e8f0;
+        }
+        .step {
+            margin-bottom: 1.25rem;
+        }
+        .step:last-child {
+            margin-bottom: 0;
+        }
+        .step-title {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: var(--text-color);
+        }
+        footer {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            margin-top: 3rem;
+        }
+        a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>cURL with <span>HTTP/3 &amp; QUIC</span></h1>
+            <p class="subtitle">Custom OpenWrt APK Repository for <code>aarch64_cortex-a53</code></p>
+            <div class="badges">
+                <span class="badge accent">HTTP/3 (QUIC)</span>
+                <span class="badge">OpenWrt 25.12+ / APK</span>
+                <span class="badge">ngtcp2 + nghttp3 + QuicTLS</span>
+                <span class="badge">Static Bundle</span>
+            </div>
+        </header>
+
+        <div class="card">
+            <h2>Quick Installation on OpenWrt</h2>
+
+            <div class="step">
+                <div class="step-title">1. Import the repository public signing key:</div>
+                <pre><code>wget -O /etc/apk/keys/curl-quic.pub <span id="key-url">https://REPLACE_URL/curl-quic.pub</span></code></pre>
+            </div>
+
+            <div class="step">
+                <div class="step-title">2. Add the repository to apk sources:</div>
+                <pre><code>echo "<span id="repo-url">https://REPLACE_URL/aarch64_cortex-a53/packages.adb</span>" &gt; /etc/apk/repositories.d/curl-quic.list</code></pre>
+            </div>
+
+            <div class="step">
+                <div class="step-title">3. Update index and install:</div>
+                <pre><code>apk update
+apk add curl-quic</code></pre>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Verify HTTP/3 Support</h2>
+            <div class="step">
+                <div class="step-title">Check version and features:</div>
+                <pre><code>curl --version</code></pre>
+            </div>
+            <div class="step">
+                <div class="step-title">Test a real HTTP/3 connection:</div>
+                <pre><code>curl --http3 -I https://cloudflare-quic.com</code></pre>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>About this build</h2>
+            <p style="margin: 0; color: var(--text-muted);">
+                This build bundles <strong>QuicTLS</strong>, <strong>nghttp3</strong>, and <strong>ngtcp2</strong> statically into <code>curl</code>.
+                It will <strong>never</strong> conflict with or overwrite the router's system <code>libssl</code> or <code>mbedtls</code> libraries,
+                ensuring 100% stability and zero dependency issues.
+            </p>
+        </div>
+
+        <footer>
+            Built automatically via GitHub Actions CI/CD.
+        </footer>
+    </div>
+
+    <script>
+        // Automatically set current domain/path in code blocks
+        const origin = window.location.origin;
+        const pathname = window.location.pathname.replace(/\/index\.html$/, '').replace(/\/$/, '');
+        const baseUrl = origin + pathname;
+        document.getElementById('key-url').textContent = baseUrl + '/curl-quic.pub';
+        document.getElementById('repo-url').textContent = baseUrl + '/aarch64_cortex-a53/packages.adb';
+
+        // Wrap each pre and attach fixed Copy button
+        document.querySelectorAll('pre').forEach(pre => {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'code-container';
+            pre.parentNode.insertBefore(wrapper, pre);
+            wrapper.appendChild(pre);
+
+            const btn = document.createElement('button');
+            btn.className = 'copy-btn';
+            btn.type = 'button';
+            btn.textContent = 'Copy';
+            btn.setAttribute('aria-label', 'Copy to clipboard');
+
+            btn.addEventListener('click', async () => {
+                const code = pre.querySelector('code');
+                const text = code ? code.innerText : pre.innerText;
+                try {
+                    await navigator.clipboard.writeText(text.trim());
+                    btn.textContent = 'Copied';
+                    btn.classList.add('copied');
+                    setTimeout(() => {
+                        btn.textContent = 'Copy';
+                        btn.classList.remove('copied');
+                    }, 2000);
+                } catch (err) {
+                    btn.textContent = 'Failed';
+                    setTimeout(() => {
+                        btn.textContent = 'Copy';
+                    }, 2000);
+                }
+            });
+
+            wrapper.appendChild(btn);
+        });
+    </script>
+</body>
+</html>
